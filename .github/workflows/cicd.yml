@@ -39,3 +39,74 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  dependency-scan:
+    name: Dependency Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+  tests:
+    name: Application Tests
+    runs-on: ubuntu-latest
+    env:
+      FLASK_SECRET_KEY: test-secret-key
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Tests
+        run: python -m unittest discover -s tests -v
+  build-and-push:
+    name: Docker Build and Publish
+    needs:
+      - secrets-scan
+      - sast
+      - dependency-scan
+      - tests
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}:${{ github.run_id }}"
+          docker build -t "$IMAGE" .
+
+      - name: Scan Docker Image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}:${{ github.run_id }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Image to Docker Hub
+        run: |
+          IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}"
+          docker push "$IMAGE:${{ github.run_id }}"
